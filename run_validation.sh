@@ -22,7 +22,7 @@ CKPT_DIR="${CKPT_DIR:-}"
 VAL_SETS_DIR="${VAL_SETS_DIR:-/iopsstor/scratch/cscs/aditikhandelwal/datasets/validation}"
 
 # Where to save evaluation results JSON
-VAL_RESULTS_FILE="${VAL_RESULTS_FILE:-${VAL_SETS_DIR}/eval_results.json}"
+VAL_RESULTS_FILE="${eval_results.json}"
 
 # Max eval iters per validation set (empty = eval all data)
 VAL_MAX_ITERS="${VAL_MAX_ITERS:-}"

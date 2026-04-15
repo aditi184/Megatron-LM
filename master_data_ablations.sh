@@ -263,7 +263,7 @@ TRAINING_CMD="python3 $MEGATRON_LM_DIR/pretrain_gpt.py \
 
 # Hugging Face Token
 export HF_TOKEN=''
-export WANDB_API_KEY='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'
+export WANDB_API_KEY=''
 export TRANSFORMERS_NO_SLOW_TOKENIZER=1
 
 if [ -n "$WANDB_API_KEY" ]; then

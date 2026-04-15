@@ -16,7 +16,7 @@ echo "START TIME: $(date)"
 
 ################ Configs ################
 # Path to the checkpoint to evaluate (should be the same --save dir used during training)
-CKPT_DIR="${CKPT_DIR:-/iopsstor/scratch/cscs/aditikhandelwal/megatron_trials/Megatron-LM/logs/Meg-Runs/MultimodalScalingLawsV2/model2-ablation-16n-4096sl-128gbsz-lr1.0x-bs1.0x-s28/checkpoints}"
+CKPT_DIR="${CKPT_DIR:-}"
 
 # Path to per-modality validation sets (created by create_validation_sets.py)
 VAL_SETS_DIR="${VAL_SETS_DIR:-/iopsstor/scratch/cscs/aditikhandelwal/datasets/validation}"

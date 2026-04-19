@@ -23,6 +23,7 @@ MODEL_SCRIPT="$SCRIPT_DIR/master_data_ablations.sh"
 HYPERPARAMS_CSV="$SCRIPT_DIR/hyperparamters.csv"
 
 DATA_DIR=/iopsstor/scratch/cscs/aditikhandelwal/pretraining-datasets
+PROJECT_NAME=MultimodalDataAblationScalingLaws
 TEXT_PATH="$DATA_DIR/merged/text_only_merged"
 VISION_I2T_PATH="$DATA_DIR/vision_text_interleaved/train_img_conditioned_on_text/llavaOv1_5_Midtrain_paired_apertus8b_emu3p5_merged"
 VISION_T2I_PATH="$DATA_DIR/vision_text_interleaved/train_text_conditioned_on_img/llavaOv1_5_Midtrain_paired_apertus8b_emu3p5_merged"
@@ -37,6 +38,7 @@ CHECKPOINT_STEPS=1000
 SEED=28
 AUTO_REQUEUE=false
 SKIP_VALIDATION=false
+SKIP_COMPLETED=false
 DRY_RUN=false
 WALLTIME=""
 RESERVATION=""
@@ -228,7 +230,7 @@ submit_job() {
     local gbs="${HP_GBS[$key]:-}"
     local lr="${HP_LR[$key]:-}"
     local hs="${HP_HS[$key]:-}"
-    local min_lr model_tag tag job_id
+    local min_lr model_tag tag job_id exp_name exp_dir ckpt_file target_steps last_ckpt
 
     if [ -z "$tp" ] || [ -z "$ep" ] || [ -z "$mbs" ] || [ -z "$gbs" ] || [ -z "$lr" ] || [ -z "$hs" ]; then
         echo "Missing hyperparameters for $model datasize=$datasize" >&2
@@ -240,12 +242,24 @@ submit_job() {
     min_lr="$(min_lr_for "$lr")"
     model_tag="$(normalize_model "$model")"
     tag="${TAG_PREFIX}${case_tag}-${model_tag}-ds${datasize}B-ep${ep}-tp${tp}-mbs${mbs}-gbs${gbs}-hs${hs}${TAG_SUFFIX:+-$TAG_SUFFIX}"
+    exp_name="${model_tag}-efficient-data-ablation-16n-4096sl-${gbs}gbsz-${tag}"
+    exp_dir="/iopsstor/scratch/cscs/aditikhandelwal/logs/$PROJECT_NAME/$exp_name"
+    ckpt_file="$exp_dir/checkpoints/latest_checkpointed_iteration.txt"
+    target_steps=$((total_tokens / (gbs * 4096)))
+
+    if [ "$SKIP_COMPLETED" = true ] && [ -f "$ckpt_file" ]; then
+        last_ckpt=$(tr -d '[:space:]' < "$ckpt_file")
+        if [[ "$last_ckpt" =~ ^[0-9]+$ ]] && [ "$last_ckpt" -ge "$target_steps" ]; then
+            echo "  ${tag} | already complete at iteration ${last_ckpt}/${target_steps}; skipping"
+            return 1
+        fi
+    fi
 
     echo "  ${tag} | tokens=${total_tokens} | lr=${lr} min_lr=${min_lr}"
 
     if [ "$DRY_RUN" = false ]; then
         local -a sbatch_args cmd
-        sbatch_args=(--parsable)
+        sbatch_args=(--parsable --job-name="data_ablaiton-${case_tag}-${model_tag}")
         if [ -n "$WALLTIME" ]; then
             sbatch_args+=(--time="$WALLTIME")
         fi
@@ -276,6 +290,7 @@ submit_job() {
         job_id=$("${cmd[@]}")
         echo "    -> Submitted job $job_id"
     fi
+    return 0
 }
 
 while [ $# -gt 0 ]; do
@@ -290,6 +305,7 @@ while [ $# -gt 0 ]; do
         --tag-suffix) TAG_SUFFIX="$2"; shift 2 ;;
         --auto-requeue) AUTO_REQUEUE=true; shift ;;
         --skip-validation) SKIP_VALIDATION=true; shift ;;
+        --skip-completed) SKIP_COMPLETED=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         --help|-h) usage; exit 0 ;;
         *)
@@ -317,6 +333,7 @@ echo "  hyperparams=$HYPERPARAMS_CSV"
 echo "  models=${MODEL_FILTER:-all from CSV}"
 echo "  data cases=${#CASE_TAGS[@]}"
 echo "  validation: skip=$SKIP_VALIDATION"
+echo "  completed experiments: skip=$SKIP_COMPLETED"
 if [ "$DRY_RUN" = true ]; then
     echo "  dry-run=true"
 fi
@@ -330,8 +347,9 @@ for model in "${MODELS[@]}"; do
 
     echo "Model: $model"
     for i in "${!CASE_TAGS[@]}"; do
-        submit_job "$model" "${CASE_TAGS[$i]}" "${CASE_DATASIZES[$i]}" "${CASE_TOTAL_TOKENS[$i]}" "${CASE_DATA_PATHS[$i]}"
-        total_jobs=$((total_jobs + 1))
+        if submit_job "$model" "${CASE_TAGS[$i]}" "${CASE_DATASIZES[$i]}" "${CASE_TOTAL_TOKENS[$i]}" "${CASE_DATA_PATHS[$i]}"; then
+            total_jobs=$((total_jobs + 1))
+        fi
     done
     echo ""
 done

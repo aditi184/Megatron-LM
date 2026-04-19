@@ -17,12 +17,18 @@ echo "START TIME: $(date)"
 ################ Configs ################
 # Path to the checkpoint to evaluate (should be the same --save dir used during training)
 CKPT_DIR="${CKPT_DIR:-}"
+if [ -z "$CKPT_DIR" ]; then
+	echo "ERROR: CKPT_DIR must be set to the training checkpoint directory." >&2
+	exit 2
+fi
+
+EXP_DIR="${VAL_EXP_DIR:-$(dirname "$CKPT_DIR")}"
 
 # Path to per-modality validation sets (created by create_validation_sets.py)
 VAL_SETS_DIR="${VAL_SETS_DIR:-/iopsstor/scratch/cscs/aditikhandelwal/datasets/validation}"
 
 # Where to save evaluation results JSON
-VAL_RESULTS_FILE="${eval_results.json}"
+VAL_RESULTS_FILE="${VAL_RESULTS_FILE:-$EXP_DIR/validation/eval_results.json}"
 
 # Max eval iters per validation set (empty = eval all data)
 VAL_MAX_ITERS="${VAL_MAX_ITERS:-}"
@@ -49,14 +55,14 @@ LR_WARMUP="${VAL_LR_WARMUP:-300}"
 MEGATRON_LM_DIR=/iopsstor/scratch/cscs/$USER/megatron_trials/Megatron-LM
 DATASET_CACHE_DIR=/iopsstor/scratch/cscs/$USER/datasets/cache
 
-PROJECT_NAME=MultimodalScalingLawsV2
-EXP_NAME="${VAL_EXP_NAME:-model2-ablation-16n-${SEQ_LEN}sl-${GBS}gbsz-lr1.0x-bs1.0x-s28}"
+PROJECT_NAME="${VAL_PROJECT_NAME:-MultimodalDataAblationScalingLaws}"
+EXP_NAME="${VAL_EXP_NAME:-$(basename "$EXP_DIR")}"
 
-PROJECT_DIR=$MEGATRON_LM_DIR/logs/Meg-Runs/$PROJECT_NAME
-EXP_DIR=$PROJECT_DIR/$EXP_NAME
 LOGGING_DIR="${VAL_LOGGING_DIR:-$EXP_DIR/logging}"
 TENSORBOARD_DIR=$LOGGING_DIR/tensorboard
 #########################################
+
+mkdir -p "$(dirname "$VAL_RESULTS_FILE")" "$LOGGING_DIR" "$TENSORBOARD_DIR"
 
 # Set up ENV
 export TORCH_NCCL_AVOID_RECORD_STREAMS=1

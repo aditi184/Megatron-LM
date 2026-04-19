@@ -33,6 +33,8 @@ TRAINING_STEPS=$((TOTAL_TOKENS / TOKENS_PER_STEP))
 WARMUP_STEPS=$(( (TRAINING_STEPS * 3 + 99) / 100 ))
 COOLDOWN_STEPS=$(( (TRAINING_STEPS * 10 + 99) / 100 ))
 CHECKPOINT_STEPS=${OVERRIDE_CHECKPOINT_STEPS:-1000}
+LR=${OVERRIDE_LR:-0.00300541}
+MIN_LR=${OVERRIDE_MIN_LR:-0.000300541}
 
 AUTO_JOB_REQUEUE=${OVERRIDE_AUTO_REQUEUE:-false}
 SKIP_VALIDATION=${OVERRIDE_SKIP_VALIDATION:-false}
@@ -47,7 +49,7 @@ MEGATRON_LM_DIR=/iopsstor/scratch/cscs/$USER/megatron_trials/Megatron-LM
 DATASET_CACHE_DIR=/iopsstor/scratch/cscs/$USER/datasets/cache
 BACKUP_CODEBASE=false
 
-PROJECT_NAME=MultimodalScalingLawsV2
+PROJECT_NAME=MultimodalDataAblationScalingLaws
 MODEL_NAME=${OVERRIDE_MODEL_NAME:-model2}
 ABLATION_TAG=${OVERRIDE_TAG:-""}
 EXP_NAME=${MODEL_NAME}-efficient-data-ablation-${SLURM_NNODES}n-${SEQ_LEN}sl-${GBS}gbsz${ABLATION_TAG:+-$ABLATION_TAG}
@@ -143,8 +145,8 @@ INITIALIZATION_ARGS=(
 )
 
 LEARNING_RATE_ARGS=(
-	--lr ${OVERRIDE_LR:-0.00300541}
-	--min-lr ${OVERRIDE_MIN_LR:-0.000300541}
+	--lr $LR
+	--min-lr $MIN_LR
 	--lr-decay-style WSD
 	--lr-warmup-iters $WARMUP_STEPS
 	--lr-wsd-decay-style linear
@@ -263,7 +265,7 @@ TRAINING_CMD="python3 $MEGATRON_LM_DIR/pretrain_gpt.py \
 
 # Hugging Face Token
 export HF_TOKEN=''
-export WANDB_API_KEY=''
+export WANDB_API_KEY='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'
 export TRANSFORMERS_NO_SLOW_TOKENIZER=1
 
 if [ -n "$WANDB_API_KEY" ]; then
@@ -349,12 +351,6 @@ if [ -f "$CKPT_DIR/latest_checkpointed_iteration.txt" ]; then
   fi
 fi
 
-if [ -f $TRIGGER_DIR/exit ]; then
-   echo "[$(date)] Detected exit trigger in $TRIGGER_DIR/exit, cancelling pending jobs"
-   rm -rf $TRIGGER_DIR/exit
-   scancel --jobname $SLURM_JOB_NAME
-fi
-
 # Run validation evaluation on the final checkpoint unless disabled for short sweeps
 if [ "$SKIP_VALIDATION" = true ]; then
   echo "[$(date)] Skipping validation submission."
@@ -362,5 +358,33 @@ elif [ "$TRAINING_COMPLETE" != true ]; then
   echo "[$(date)] Training is not complete yet; skipping validation submission."
 else
   echo "[$(date)] Submitting validation evaluation job..."
-  CKPT_DIR=$CKPT_DIR VAL_SETS_DIR=/iopsstor/scratch/cscs/aditikhandelwal/datasets/validation VAL_MAX_ITERS=50 sbatch $MEGATRON_LM_DIR/run_validation.sh
+  mkdir -p "$EXP_DIR/validation"
+  VALIDATION_JOB_ID=$(CKPT_DIR="$CKPT_DIR" \
+    VAL_SETS_DIR=/iopsstor/scratch/cscs/aditikhandelwal/datasets/validation \
+    VAL_RESULTS_FILE="$EXP_DIR/validation/eval_results.json" \
+    VAL_MAX_ITERS=50 \
+    VAL_PROJECT_NAME="$PROJECT_NAME" \
+    VAL_EXP_NAME="$EXP_NAME" \
+    VAL_LOGGING_DIR="$LOGGING_DIR" \
+    VAL_MBS="$MBS" \
+    VAL_GBS="$GBS" \
+    VAL_TP="$TP" \
+    VAL_EP="$EP" \
+    VAL_PP="$PP" \
+    VAL_SEQ_LEN="$SEQ_LEN" \
+    VAL_HIDDEN_SIZE="$HIDDEN_SIZE" \
+    VAL_MOE_FFN_HIDDEN="$MOE_FFN_HIDDEN_SIZE" \
+    VAL_MOE_SHARED_EXPERT="$MOE_SHARED_EXPERT_INTERMEDIATE_SIZE" \
+    VAL_MOE_DISPATCHER=allgather \
+    VAL_LR="$LR" \
+    VAL_MIN_LR="$MIN_LR" \
+    VAL_LR_WARMUP="$WARMUP_STEPS" \
+    sbatch --parsable --job-name="val_${SLURM_JOB_NAME}" "$MEGATRON_LM_DIR/run_validation.sh")
+  echo "[$(date)] Submitted validation job $VALIDATION_JOB_ID"
+fi
+
+if [ -f $TRIGGER_DIR/exit ]; then
+   echo "[$(date)] Detected exit trigger in $TRIGGER_DIR/exit, cancelling pending jobs"
+   rm -rf $TRIGGER_DIR/exit
+   scancel --jobname $SLURM_JOB_NAME
 fi

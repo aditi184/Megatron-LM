@@ -260,12 +260,16 @@ append_manifest_row() {
     } >> "$MANIFEST_PATH"
 }
 
-submit_validation() {
-    local exp_name="$1"
-    local exp_dir="$2"
-    local ckpt_dir="$3"
-    local mbs="$4"
-    local gbs="$5"
+shell_quote() {
+    printf '%q' "$1"
+}
+
+append_batch_run() {
+    local batch_script="$1"
+    local exp_name="$2"
+    local exp_dir="$3"
+    local ckpt_dir="$4"
+    local mbs="$5"
     local tp="$6"
     local ep="$7"
     local hs="$8"
@@ -273,51 +277,72 @@ submit_validation() {
     local min_lr="${10}"
     local warmup_steps="${11}"
     local results_file="${12}"
-    local model_tag="${13}"
-    local case_tag="${14}"
-    local -a sbatch_args cmd
 
     mkdir -p "$exp_dir/validation"
 
-    sbatch_args=(--parsable --job-name="val_data_ablation_${model_tag}")
+    {
+        printf 'echo "[%s] Running %s"\n' '$(date)' "$(shell_quote "$exp_name")"
+        printf 'CKPT_DIR=%s ' "$(shell_quote "$ckpt_dir")"
+        printf 'VAL_SETS_DIR=%s ' "$(shell_quote "$VAL_SETS_DIR")"
+        printf 'VAL_RESULTS_FILE=%s ' "$(shell_quote "$results_file")"
+        printf 'VAL_MAX_ITERS= '
+        printf 'VAL_ALL_CKPTS=false '
+        printf 'VAL_FRACTION= '
+        printf 'VAL_PROJECT_NAME=%s ' "$(shell_quote "$PROJECT_NAME")"
+        printf 'VAL_EXP_NAME=%s ' "$(shell_quote "$exp_name")"
+        printf 'VAL_LOGGING_DIR=%s ' "$(shell_quote "$exp_dir/logging")"
+        printf 'VAL_MBS=%s ' "$(shell_quote "$mbs")"
+        printf 'VAL_GBS=1024 '
+        printf 'VAL_TP=%s ' "$(shell_quote "$tp")"
+        printf 'VAL_EP=%s ' "$(shell_quote "$ep")"
+        printf 'VAL_PP=1 '
+        printf 'VAL_SEQ_LEN=%s ' "$(shell_quote "$SEQ_LEN")"
+        printf 'VAL_HIDDEN_SIZE=%s ' "$(shell_quote "$hs")"
+        printf 'VAL_MOE_FFN_HIDDEN=%s ' "$(shell_quote "$hs")"
+        printf 'VAL_MOE_SHARED_EXPERT=%s ' "$(shell_quote "$hs")"
+        printf 'VAL_MOE_DISPATCHER=allgather '
+        printf 'VAL_LR=%s ' "$(shell_quote "$lr")"
+        printf 'VAL_MIN_LR=%s ' "$(shell_quote "$min_lr")"
+        printf 'VAL_LR_WARMUP=%s ' "$(shell_quote "$warmup_steps")"
+        printf 'bash %s\n' "$(shell_quote "$RUN_VALIDATION_SCRIPT")"
+        printf '\n'
+    } >> "$batch_script"
+}
+
+submit_validation_batch() {
+    local model="$1"
+    local model_tag="$2"
+    local batch_script="$3"
+    local -a sbatch_args
+
+    sbatch_args=(
+        --parsable
+        --account=infra01
+        --nodes=16
+        --ntasks-per-node=4
+        --gpus-per-node=4
+        --cpus-per-task=72
+        --mem=460000
+        --no-requeue
+        --job-name="val_data_ablation_${model_tag}"
+        --output="/iopsstor/scratch/cscs/%u/slurmlogs/val_data_ablation_${model_tag}-%j.out"
+        --error="/iopsstor/scratch/cscs/%u/slurmlogs/val_data_ablation_${model_tag}-%j.err"
+    )
     if [ -n "$WALLTIME" ]; then
         sbatch_args+=(--time="$WALLTIME")
+    else
+        sbatch_args+=(--time=12:00:00)
     fi
     if [ -n "$RESERVATION" ]; then
         sbatch_args+=(--reservation="$RESERVATION")
     fi
 
-    cmd=(env
-        "CKPT_DIR=$ckpt_dir"
-        "VAL_SETS_DIR=$VAL_SETS_DIR"
-        "VAL_RESULTS_FILE=$results_file"
-        "VAL_MAX_ITERS="
-        "VAL_ALL_CKPTS=false"
-        "VAL_FRACTION="
-        "VAL_PROJECT_NAME=$PROJECT_NAME"
-        "VAL_EXP_NAME=$exp_name"
-        "VAL_LOGGING_DIR=$exp_dir/logging"
-        "VAL_MBS=$mbs"
-        "VAL_GBS=1024"
-        "VAL_TP=$tp"
-        "VAL_EP=$ep"
-        "VAL_PP=1"
-        "VAL_SEQ_LEN=$SEQ_LEN"
-        "VAL_HIDDEN_SIZE=$hs"
-        "VAL_MOE_FFN_HIDDEN=$hs"
-        "VAL_MOE_SHARED_EXPERT=$hs"
-        "VAL_MOE_DISPATCHER=allgather"
-        "VAL_LR=$lr"
-        "VAL_MIN_LR=$min_lr"
-        "VAL_LR_WARMUP=$warmup_steps"
-        sbatch "${sbatch_args[@]}" "$RUN_VALIDATION_SCRIPT")
-
     if [ "$DRY_RUN" = true ]; then
-        echo "  DRY RUN submit: $exp_name ($case_tag)"
+        echo "  DRY RUN submit batch for $model using $batch_script"
         return 0
     fi
 
-    "${cmd[@]}"
+    sbatch "${sbatch_args[@]}" "$batch_script"
 }
 
 while [ $# -gt 0 ]; do
@@ -373,6 +398,9 @@ for model in "${MODELS[@]}"; do
 
     model_tag="$(normalize_model "$model")"
     echo "Model: $model"
+    pending_count=0
+    batch_job_id=""
+    batch_script=""
 
     for i in "${!CASE_TAGS[@]}"; do
         case_tag="${CASE_TAGS[$i]}"
@@ -442,16 +470,34 @@ for model in "${MODELS[@]}"; do
             continue
         fi
 
-        job_id="$(submit_validation "$exp_name" "$exp_dir" "$ckpt_dir" "$mbs" "$gbs" "$tp" "$ep" "$hs" "$lr" "$min_lr" "$warmup_steps" "$final_results_file" "$model_tag" "$case_tag")"
-        if [ "$DRY_RUN" = true ]; then
-            echo "  READY final validation: $exp_name (iter $last_ckpt)"
-            append_manifest_row "$model" "$case_tag" "$datasize" "$exp_name" "$exp_dir" "$ckpt_dir" "$target_steps" "$last_ckpt" "ready_to_submit" "$final_results_file" ""
-        else
-            echo "  SUBMITTED $job_id: $exp_name (iter $last_ckpt)"
-            append_manifest_row "$model" "$case_tag" "$datasize" "$exp_name" "$exp_dir" "$ckpt_dir" "$target_steps" "$last_ckpt" "submitted" "$final_results_file" "$job_id"
+        if [ -z "$batch_script" ]; then
+            batch_script="$(mktemp "/tmp/${model_tag}_final_validation_XXXXXX.sh")"
+            chmod +x "$batch_script"
+            {
+                printf '#!/bin/bash\n'
+                printf 'set -euo pipefail\n\n'
+                printf 'echo "[%s] Starting batched final validations for %s"\n' '$(date)' "$(shell_quote "$model")"
+                printf '\n'
+            } > "$batch_script"
         fi
-        submitted=$((submitted + 1))
+
+        append_batch_run "$batch_script" "$exp_name" "$exp_dir" "$ckpt_dir" "$mbs" "$tp" "$ep" "$hs" "$lr" "$min_lr" "$warmup_steps" "$final_results_file"
+        echo "  QUEUED final validation: $exp_name (iter $last_ckpt)"
+        append_manifest_row "$model" "$case_tag" "$datasize" "$exp_name" "$exp_dir" "$ckpt_dir" "$target_steps" "$last_ckpt" "queued_for_batch_submission" "$final_results_file" ""
+        pending_count=$((pending_count + 1))
     done
+
+    if [ "$pending_count" -gt 0 ]; then
+        batch_job_id="$(submit_validation_batch "$model" "$model_tag" "$batch_script")"
+        if [ "$DRY_RUN" = true ]; then
+            echo "  READY batch validation job for $model with $pending_count runs"
+        else
+            echo "  SUBMITTED $batch_job_id: batch validation job for $model with $pending_count runs"
+        fi
+        submitted=$((submitted + pending_count))
+    else
+        echo "  No pending final validations for $model"
+    fi
 
     echo ""
 done

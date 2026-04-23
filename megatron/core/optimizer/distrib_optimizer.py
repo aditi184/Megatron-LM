@@ -917,6 +917,8 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
         if self.config.use_precision_aware_optimizer_no_fp8_or_ds_fp8:
             sharded_model_param = self.optimizer.param_groups[group_index]["params"][group_order]
             for k, v in tensors.items():
+                if k == "padding":
+                    continue
                 if isinstance(self.optimizer, HybridDeviceOptimizer):
                     if k == "param":
                         k = "master_param"

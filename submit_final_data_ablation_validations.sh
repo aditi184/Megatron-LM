@@ -310,8 +310,8 @@ append_batch_run() {
 }
 
 submit_validation_batch() {
-    local model="$1"
-    local model_tag="$2"
+    local job_label="$1"
+    local job_tag="$2"
     local batch_script="$3"
     local -a sbatch_args
 
@@ -324,9 +324,9 @@ submit_validation_batch() {
         --cpus-per-task=72
         --mem=460000
         --no-requeue
-        --job-name="val_data_ablation_${model_tag}"
-        --output="/iopsstor/scratch/cscs/%u/slurmlogs/val_data_ablation_${model_tag}-%j.out"
-        --error="/iopsstor/scratch/cscs/%u/slurmlogs/val_data_ablation_${model_tag}-%j.err"
+        --job-name="val_data_ablation_${job_tag}"
+        --output="/iopsstor/scratch/cscs/%u/slurmlogs/val_data_ablation_${job_tag}-%j.out"
+        --error="/iopsstor/scratch/cscs/%u/slurmlogs/val_data_ablation_${job_tag}-%j.err"
     )
     if [ -n "$WALLTIME" ]; then
         sbatch_args+=(--time="$WALLTIME")
@@ -338,7 +338,7 @@ submit_validation_batch() {
     fi
 
     if [ "$DRY_RUN" = true ]; then
-        echo "  DRY RUN submit batch for $model using $batch_script"
+        echo "  DRY RUN submit batch for $job_label using $batch_script"
         return 0
     fi
 
@@ -390,6 +390,8 @@ submitted=0
 skipped_validated=0
 skipped_incomplete=0
 skipped_missing=0
+batch_script=""
+total_pending_count=0
 
 for model in "${MODELS[@]}"; do
     if ! model_selected "$model"; then
@@ -399,8 +401,6 @@ for model in "${MODELS[@]}"; do
     model_tag="$(normalize_model "$model")"
     echo "Model: $model"
     pending_count=0
-    batch_job_id=""
-    batch_script=""
 
     for i in "${!CASE_TAGS[@]}"; do
         case_tag="${CASE_TAGS[$i]}"
@@ -471,12 +471,12 @@ for model in "${MODELS[@]}"; do
         fi
 
         if [ -z "$batch_script" ]; then
-            batch_script="$(mktemp "/tmp/${model_tag}_final_validation_XXXXXX.sh")"
+            batch_script="$(mktemp "/tmp/final_validation_batch_XXXXXX.sh")"
             chmod +x "$batch_script"
             {
                 printf '#!/bin/bash\n'
                 printf 'set -euo pipefail\n\n'
-                printf 'echo "[%s] Starting batched final validations for %s"\n' '$(date)' "$(shell_quote "$model")"
+                printf 'echo "[%s] Starting batched final validations"\n' '$(date)'
                 printf '\n'
             } > "$batch_script"
         fi
@@ -485,22 +485,27 @@ for model in "${MODELS[@]}"; do
         echo "  QUEUED final validation: $exp_name (iter $last_ckpt)"
         append_manifest_row "$model" "$case_tag" "$datasize" "$exp_name" "$exp_dir" "$ckpt_dir" "$target_steps" "$last_ckpt" "queued_for_batch_submission" "$final_results_file" ""
         pending_count=$((pending_count + 1))
+        total_pending_count=$((total_pending_count + 1))
     done
 
     if [ "$pending_count" -gt 0 ]; then
-        batch_job_id="$(submit_validation_batch "$model" "$model_tag" "$batch_script")"
-        if [ "$DRY_RUN" = true ]; then
-            echo "  READY batch validation job for $model with $pending_count runs"
-        else
-            echo "  SUBMITTED $batch_job_id: batch validation job for $model with $pending_count runs"
-        fi
-        submitted=$((submitted + pending_count))
+        echo "  READY $pending_count runs for shared batch submission"
     else
         echo "  No pending final validations for $model"
     fi
 
     echo ""
 done
+
+if [ "$total_pending_count" -gt 0 ]; then
+    batch_job_id="$(submit_validation_batch "${MODEL_FILTER:-selected_models}" "selected_models" "$batch_script")"
+    if [ "$DRY_RUN" = true ]; then
+        echo "READY shared batch validation job with $total_pending_count runs total"
+    else
+        echo "SUBMITTED $batch_job_id: shared batch validation job with $total_pending_count runs total"
+    fi
+    submitted=$total_pending_count
+fi
 
 echo "========================================"
 echo "submitted=$submitted"
